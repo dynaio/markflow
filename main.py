@@ -1,6 +1,11 @@
 import sys
 import subprocess
+import shutil
 from pathlib import Path
+
+from pygments.lexers import get_lexer_for_filename, TextLexer
+from pygments.util import ClassNotFound
+from pygments.token import Token
 
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QDir, QSettings
 from PyQt6.QtGui import (
@@ -12,6 +17,7 @@ from PyQt6.QtGui import (
     QKeySequence,
     QFileSystemModel,
     QTextFormat,
+    QIcon,
 )
 
 from PyQt6.QtWidgets import (
@@ -104,6 +110,260 @@ class MarkdownHighlighter(QSyntaxHighlighter):
                 )
 
 
+
+# ============================================================
+# PROGRAMMING LANGUAGE SYNTAX HIGHLIGHTER
+# ============================================================
+
+class PygmentsHighlighter(QSyntaxHighlighter):
+
+    def __init__(self, document):
+        super().__init__(document)
+
+        self.lexer = TextLexer()
+        self.theme = "light"
+        self.formats = {}
+
+        self._cached_text = None
+        self._line_formats = []
+
+        # Debounce full-document tokenization while the user is typing.
+        self._highlight_timer = QTimer(self)
+        self._highlight_timer.setSingleShot(True)
+        self._highlight_timer.setInterval(180)
+        self._highlight_timer.timeout.connect(self._refresh_highlighting)
+
+        self.set_theme("light")
+
+    def setDocument(self, document):
+        super().setDocument(document)
+        if document is not None and hasattr(self, "_highlight_timer"):
+            self._highlight_timer.start(0)
+
+    def _on_document_changed(self):
+        # Refresh once after typing pauses, preserving multiline lexer state.
+        if self.document() is not None:
+            self._highlight_timer.start()
+
+    def _refresh_highlighting(self):
+        document = self.document()
+        if document is None:
+            return
+
+        self._highlight_timer.stop()
+        self._build_cache(document.toPlainText())
+        self.rehighlight()
+
+    def set_lexer_for_file(self, filename):
+        filename = str(filename)
+        suffix = Path(filename).suffix.lower()
+        basename = Path(filename).name.lower()
+
+        try:
+            if basename == ".env" or basename.startswith(".env."):
+                from pygments.lexers import get_lexer_by_name
+                self.lexer = get_lexer_by_name("ini")
+
+            elif basename == ".gitignore":
+                self.lexer = TextLexer()
+
+            else:
+                self.lexer = get_lexer_for_filename(
+                    filename,
+                    stripnl=False,
+                    ensurenl=False
+                )
+
+        except ClassNotFound:
+            self.lexer = TextLexer()
+
+        self._refresh_highlighting()
+
+    def set_theme(self, theme):
+        self.theme = theme
+
+        if theme == "dark":
+            colors = {
+                "comment": "#7F8795",
+                "docstring": "#829B83",
+                "keyword": "#C678DD",
+                "string": "#98C379",
+                "string_escape": "#E5C07B",
+                "number": "#D19A66",
+                "function": "#61AFEF",
+                "class": "#E5C07B",
+                "type": "#56B6C2",
+                "variable": "#E06C75",
+                "constant": "#D19A66",
+                "attribute": "#E5C07B",
+                "namespace": "#56B6C2",
+                "tag": "#E06C75",
+                "builtin": "#56B6C2",
+                "decorator": "#E5C07B",
+                "operator": "#ABB2BF",
+                "punctuation": "#ABB2BF",
+            }
+        else:
+            colors = {
+                "comment": "#7A8492",
+                "docstring": "#547B58",
+                "keyword": "#9254B8",
+                "string": "#287A52",
+                "string_escape": "#A15C00",
+                "number": "#C04452",
+                "function": "#245FC7",
+                "class": "#A15C00",
+                "type": "#087E9B",
+                "variable": "#B13B50",
+                "constant": "#A85B18",
+                "attribute": "#986000",
+                "namespace": "#087E9B",
+                "tag": "#B13B50",
+                "builtin": "#087E9B",
+                "decorator": "#986000",
+                "operator": "#526071",
+                "punctuation": "#526071",
+            }
+
+        self.formats = {}
+
+        for name, color in colors.items():
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+
+            if name in (
+                "keyword",
+                "function",
+                "class",
+                "type",
+                "constant",
+                "decorator",
+                "tag",
+            ):
+                fmt.setFontWeight(QFont.Weight.Bold)
+
+            if name in ("comment", "docstring"):
+                fmt.setFontItalic(True)
+
+            self.formats[name] = fmt
+
+        self._refresh_highlighting()
+
+    def _format_for_token(self, token):
+
+        if token in Token.Comment:
+            return self.formats["comment"]
+
+        if token in Token.Keyword:
+            return self.formats["keyword"]
+
+        if token in Token.Literal.String.Doc:
+            return self.formats["docstring"]
+
+        if token in Token.Literal.String.Escape:
+            return self.formats["string_escape"]
+
+        if token in Token.Literal.String.Interpol:
+            return self.formats["string_escape"]
+
+        if token in Token.Literal.String:
+            return self.formats["string"]
+
+        if token in Token.Literal.Number:
+            return self.formats["number"]
+
+        if token in Token.Name.Decorator:
+            return self.formats["decorator"]
+
+        if token in Token.Name.Function:
+            return self.formats["function"]
+
+        if token in Token.Name.Class:
+            return self.formats["class"]
+
+        if token in Token.Name.Builtin:
+            return self.formats["builtin"]
+
+        if token in Token.Name.Constant:
+            return self.formats["constant"]
+
+        if token in Token.Name.Namespace:
+            return self.formats["namespace"]
+
+        if token in Token.Name.Attribute:
+            return self.formats["attribute"]
+
+        if token in Token.Name.Tag:
+            return self.formats["tag"]
+
+        if token in Token.Name.Variable:
+            return self.formats["variable"]
+
+        if token in Token.Name.Other:
+            return self.formats["type"]
+
+        if token in Token.Name:
+            return self.formats["variable"]
+
+        if token in Token.Operator:
+            return self.formats["operator"]
+
+        if token in Token.Punctuation:
+            return self.formats["punctuation"]
+
+        return None
+
+    def _build_cache(self, text):
+        """
+        Tokenize the complete document.
+
+        Keeping the full lexer input allows Pygments to correctly
+        recognize multiline strings, comments and other constructs.
+        Results are separated into Qt text blocks for fast rendering.
+        """
+
+        lines = [[] for _ in range(text.count("\n") + 1)]
+
+        line_number = 0
+        column = 0
+
+        for _, token, value in self.lexer.get_tokens_unprocessed(text):
+            fmt = self._format_for_token(token)
+
+            parts = value.split("\n")
+
+            for index, part in enumerate(parts):
+
+                if part and fmt is not None:
+                    lines[line_number].append(
+                        (column, len(part), fmt)
+                    )
+
+                column += len(part)
+
+                if index < len(parts) - 1:
+                    line_number += 1
+                    column = 0
+
+        self._line_formats = lines
+        self._cached_text = text
+
+    def highlightBlock(self, text):
+        try:
+            # Cache is prepared once before rehighlight(), not once per block.
+            block_number = self.currentBlock().blockNumber()
+
+            if block_number >= len(self._line_formats):
+                return
+
+            for position, length, fmt in self._line_formats[block_number]:
+                self.setFormat(position, length, fmt)
+
+        except Exception:
+            # Syntax highlighting must never interrupt editing.
+            return
+
+
 # ============================================================
 # GENERAL TEXT EDITOR
 # ============================================================
@@ -127,7 +387,22 @@ class TextEditor(QPlainTextEdit):
         )
 
         self.current_theme = "light"
-        self.highlighter = MarkdownHighlighter(self.document())
+
+        self.markdown_highlighter = MarkdownHighlighter(
+            self.document()
+        )
+        self.code_highlighter = PygmentsHighlighter(
+            self.document()
+        )
+
+        # Content changes invalidate the full-document token cache.
+        # Formatting changes do not emit this editor signal.
+        self.textChanged.connect(
+            self.code_highlighter._on_document_changed
+        )
+
+        self.active_language = "markdown"
+
         self.apply_editor_settings(
             font_family,
             font_size,
@@ -165,17 +440,36 @@ class TextEditor(QPlainTextEdit):
         )
         self.setLineWrapMode(mode)
 
-        self.highlighter.setDocument(
-            self.document() if syntax_highlighting else None
-        )
+        self.set_syntax_highlighting(syntax_highlighting)
 
         self.highlight_current_line()
 
+    def set_language(self, filename):
+        suffix = Path(str(filename)).suffix.lower()
+
+        if suffix in (".md", ".markdown") or not suffix:
+            self.active_language = "markdown"
+            self.code_highlighter.setDocument(None)
+            self.markdown_highlighter.setDocument(self.document())
+        else:
+            self.active_language = "code"
+            self.markdown_highlighter.setDocument(None)
+            self.code_highlighter.set_lexer_for_file(filename)
+            self.code_highlighter.setDocument(self.document())
+
+        self.set_syntax_highlighting(self.syntax_enabled)
+
     def set_syntax_highlighting(self, enabled):
         self.syntax_enabled = bool(enabled)
-        self.highlighter.setDocument(
-            self.document() if self.syntax_enabled else None
-        )
+
+        self.markdown_highlighter.setDocument(None)
+        self.code_highlighter.setDocument(None)
+
+        if self.syntax_enabled:
+            if self.active_language == "markdown":
+                self.markdown_highlighter.setDocument(self.document())
+            else:
+                self.code_highlighter.setDocument(self.document())
 
     def highlight_current_line(self):
         if not self.show_current_line or not self.isEnabled():
@@ -215,7 +509,8 @@ class TextEditor(QPlainTextEdit):
                 selection-color: {foreground};
             }}
         """)
-        self.highlighter.set_theme(theme)
+        self.markdown_highlighter.set_theme(theme)
+        self.code_highlighter.set_theme(theme)
         self.highlight_current_line()
 
 
@@ -281,9 +576,25 @@ class MarkFlow(QMainWindow):
         super().__init__()
 
         self.current_file = None
-        self.project_root = PROJECT_ROOT
-        self.build_dir = self.project_root / ".markflow" / "build"
         self.settings = QSettings("DynaIO", "MarkFlow")
+
+        default_workspace = Path.home() / "Documents"
+        if not default_workspace.is_dir():
+            default_workspace = Path.home()
+
+        saved_workspace = self.settings.value(
+            "workspace/folder", str(default_workspace)
+        )
+        workspace = Path(str(saved_workspace)).expanduser()
+        if not workspace.is_dir():
+            workspace = default_workspace
+
+        self.project_root = workspace.resolve()
+        self.settings.setValue("workspace/folder", str(self.project_root))
+        self.markdown_only_filter = self.settings.value(
+            "explorer/markdown_only", True, type=bool
+        )
+        self.build_dir = self.project_root / ".markflow" / "build"
         self.theme = str(self.settings.value("theme", "light")).lower()
         if self.theme not in ("light", "dark"):
             self.theme = "light"
@@ -362,6 +673,10 @@ class MarkFlow(QMainWindow):
             QDir.Filter.Files |
             QDir.Filter.NoDotAndDotDot
         )
+        self.file_model.setNameFilterDisables(False)
+        self.file_model.setNameFilters(
+            ["*.md", "*.markdown"] if self.markdown_only_filter else []
+        )
 
         self.file_model.setRootPath(str(self.project_root))
 
@@ -387,6 +702,15 @@ class MarkFlow(QMainWindow):
         self.explorer_title.setObjectName("panelTitle")
 
         explorer_layout.addWidget(self.explorer_title)
+
+        self.markdown_filter_checkbox = QCheckBox("Markdown files only")
+        self.markdown_filter_checkbox.setChecked(
+            self.markdown_only_filter
+        )
+        self.markdown_filter_checkbox.toggled.connect(
+            self.set_markdown_filter
+        )
+        explorer_layout.addWidget(self.markdown_filter_checkbox)
         explorer_layout.addWidget(self.file_tree)
 
         # MARKDOWN EDITOR
@@ -890,7 +1214,7 @@ class MarkFlow(QMainWindow):
 
         self.add_action(file_menu, "New", self.new_file, "Ctrl+N")
         self.add_action(file_menu, "Open", self.open_file, "Ctrl+O")
-        self.add_action(file_menu, "Open Project Folder",
+        self.add_action(file_menu, "Open Workspace Folder...",
                         self.open_project_folder)
         self.add_action(file_menu, "Save", self.save_file, "Ctrl+S")
         self.add_action(file_menu, "Save As", self.save_file_as,
@@ -930,8 +1254,6 @@ class MarkFlow(QMainWindow):
         )
         self.preview_action.setCheckable(True)
         self.preview_action.setChecked(self.preview_is_visible)
-
-        self.export_action = None
 
         self.add_action(view_menu, "Editor Only",
                         self.show_editor_only)
@@ -1043,9 +1365,13 @@ class MarkFlow(QMainWindow):
     def update_document_mode(self):
         is_markdown = self.is_markdown_document()
 
-        # Markdown highlighting is only active for Markdown documents.
+        # Select Markdown or programming-language highlighting.
+        # Unknown extensions automatically use plain text.
+        self.editor.set_language(
+            self.current_file or Path("Untitled.md")
+        )
         self.editor.set_syntax_highlighting(
-            is_markdown and self.syntax_highlighting
+            self.syntax_highlighting
         )
 
         # The PDF preview is only available for Markdown documents.
@@ -1149,20 +1475,39 @@ class MarkFlow(QMainWindow):
             )
             self.update_document_mode()
 
+    def set_markdown_filter(self, enabled):
+
+        self.markdown_only_filter = bool(enabled)
+        self.file_model.setNameFilters(
+            ["*.md", "*.markdown"] if enabled else []
+        )
+        self.settings.setValue("explorer/markdown_only", bool(enabled))
+        self.settings.sync()
+        self.statusBar().showMessage(
+            "Showing Markdown files only" if enabled
+            else "Showing all files"
+        )
+
     def open_project_folder(self):
 
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Open Project Folder",
+            "Open Workspace Folder",
             str(self.project_root)
         )
 
         if folder:
-            self.project_root = Path(folder)
+            self.project_root = Path(folder).expanduser().resolve()
+            self.settings.setValue(
+                "workspace/folder", str(self.project_root)
+            )
+            self.settings.sync()
             self.build_dir = self.project_root / ".markflow" / "build"
             self.build_dir.mkdir(parents=True, exist_ok=True)
 
-            root_index = self.file_model.setRootPath(folder)
+            root_index = self.file_model.setRootPath(
+                str(self.project_root)
+            )
             self.file_tree.setRootIndex(root_index)
             self.explorer_title.setText(
                 f"  EXPLORER  |  {self.project_root.name}"
@@ -1188,6 +1533,35 @@ class MarkFlow(QMainWindow):
 
         if self.worker is not None and self.worker.isRunning():
             self.compile_pending = True
+            return
+
+        required_tools = {
+            "pandoc": "pandoc",
+            "xelatex": "texlive-xetex",
+            "rsvg-convert": "librsvg2-bin",
+        }
+        missing_tools = [
+            (command, package)
+            for command, package in required_tools.items()
+            if shutil.which(command) is None
+        ]
+
+        if missing_tools:
+            details = "\n".join(
+                f"• {command} — install with: sudo apt install {package}"
+                for command, package in missing_tools
+            )
+            self.compilation_label.setText("● Missing PDF dependencies")
+            self.compilation_label.setStyleSheet("color: #E06C75")
+            self.statusBar().showMessage(
+                "PDF compilation dependencies are missing"
+            )
+            QMessageBox.warning(
+                self,
+                "Missing PDF Dependencies",
+                "MarkFlow cannot compile this document because required tools "
+                "are missing:\n\n" + details,
+            )
             return
 
         content = self.editor.toPlainText()
@@ -1380,7 +1754,12 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
 
+    icon_path = Path(__file__).resolve().parent / "markflow.png"
+    app_icon = QIcon(str(icon_path))
+    app.setWindowIcon(app_icon)
+
     window = MarkFlow()
+    window.setWindowIcon(app_icon)
     window.show()
 
     sys.exit(app.exec())
