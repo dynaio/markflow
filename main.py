@@ -105,10 +105,10 @@ class MarkdownHighlighter(QSyntaxHighlighter):
 
 
 # ============================================================
-# MARKDOWN EDITOR
+# GENERAL TEXT EDITOR
 # ============================================================
 
-class MarkdownEditor(QPlainTextEdit):
+class TextEditor(QPlainTextEdit):
 
     def __init__(
         self,
@@ -170,6 +170,12 @@ class MarkdownEditor(QPlainTextEdit):
         )
 
         self.highlight_current_line()
+
+    def set_syntax_highlighting(self, enabled):
+        self.syntax_enabled = bool(enabled)
+        self.highlighter.setDocument(
+            self.document() if self.syntax_enabled else None
+        )
 
     def highlight_current_line(self):
         if not self.show_current_line or not self.isEnabled():
@@ -310,6 +316,11 @@ class MarkFlow(QMainWindow):
             "appearance/ui_font_size", 10, type=int
         )
 
+        self.preview_preferred_visible = self.settings.value(
+            "view/pdf_preview", True, type=bool
+        )
+        self.preview_is_visible = self.preview_preferred_visible
+
         self.pdf_document = None
         self.worker = None
         self.compile_pending = False
@@ -388,7 +399,7 @@ class MarkFlow(QMainWindow):
         self.editor_title = QLabel("  EDITOR  |  Untitled.md")
         self.editor_title.setObjectName("panelTitle")
 
-        self.editor = MarkdownEditor(
+        self.editor = TextEditor(
             self.editor_font_family,
             self.editor_font_size,
             self.tab_width,
@@ -403,6 +414,7 @@ class MarkFlow(QMainWindow):
         # PDF PREVIEW
 
         preview_container = QWidget()
+        self.preview_container = preview_container
         preview_layout = QVBoxLayout(preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(0)
@@ -426,7 +438,10 @@ class MarkFlow(QMainWindow):
         self.editor_preview_splitter.addWidget(editor_container)
         self.editor_preview_splitter.addWidget(preview_container)
 
-        self.editor_preview_splitter.setSizes([600, 600])
+        self.editor_preview_splitter.setSizes(
+            [600, 600] if self.preview_preferred_visible else [1200, 0]
+        )
+        self.preview_container.setVisible(self.preview_preferred_visible)
 
         main_splitter.addWidget(explorer_container)
         main_splitter.addWidget(self.editor_preview_splitter)
@@ -808,9 +823,14 @@ class MarkFlow(QMainWindow):
             self.current_line_highlight,
             self.syntax_highlighting
         )
+        self.update_document_mode()
         self.compile_timer.setInterval(self.compile_delay)
 
-        if self.auto_compile and self.editor.document().isModified():
+        if (
+            self.is_markdown_document()
+            and self.auto_compile
+            and self.editor.document().isModified()
+        ):
             self.compile_timer.start()
         else:
             self.compile_timer.stop()
@@ -878,8 +898,9 @@ class MarkFlow(QMainWindow):
 
         file_menu.addSeparator()
 
-        self.add_action(file_menu, "Export PDF", self.export_pdf,
-                        "Ctrl+E")
+        self.export_action = self.add_action(
+            file_menu, "Export PDF", self.export_pdf, "Ctrl+E"
+        )
 
         file_menu.addSeparator()
 
@@ -899,8 +920,19 @@ class MarkFlow(QMainWindow):
 
         view_menu = self.menuBar().addMenu("View")
 
-        self.add_action(view_menu, "Compile PDF",
-                        self.compile_document, "F5")
+        self.compile_action = self.add_action(
+            view_menu, "Compile PDF", self.compile_document, "F5"
+        )
+
+        self.preview_action = self.add_action(
+            view_menu, "Show PDF Preview",
+            lambda: self.toggle_pdf_preview(), "Ctrl+Shift+P"
+        )
+        self.preview_action.setCheckable(True)
+        self.preview_action.setChecked(self.preview_is_visible)
+
+        self.export_action = None
+
         self.add_action(view_menu, "Editor Only",
                         self.show_editor_only)
         self.add_action(view_menu, "PDF Only",
@@ -964,6 +996,12 @@ class MarkFlow(QMainWindow):
 
     def on_text_changed(self):
 
+        if not self.is_markdown_document():
+            self.compilation_label.setText("● Text modified")
+            self.compilation_label.setStyleSheet("color: #61AFEF")
+            self.compile_timer.stop()
+            return
+
         self.compilation_label.setText("● Changes detected")
         self.compilation_label.setStyleSheet("color: #E5C07B")
 
@@ -979,19 +1017,69 @@ class MarkFlow(QMainWindow):
         self.current_file = None
         self.editor.clear()
         self.editor_title.setText("  EDITOR  |  Untitled.md")
-        self.statusBar().showMessage("New document")
+        self.update_document_mode()
+        self.statusBar().showMessage("New Markdown document")
 
     def open_file(self):
 
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Markdown",
+            "Open Text File",
             str(self.project_root),
-            "Markdown (*.md *.markdown);;All files (*)"
+            "Text files (*.txt *.md *.markdown *.py *.json *.yaml *.yml "
+            "*.xml *.html *.htm *.css *.js *.ts *.jsx *.tsx *.sh "
+            "*.c *.cpp *.h *.hpp *.java *.dart *.sql *.toml *.ini "
+            "*.cfg *.csv *.log *.rst *.tex);;All files (*)"
         )
 
         if path:
             self.load_file(path)
+
+    def is_markdown_document(self):
+        if self.current_file is None:
+            return True
+        return self.current_file.suffix.lower() in (".md", ".markdown")
+
+    def update_document_mode(self):
+        is_markdown = self.is_markdown_document()
+
+        # Markdown highlighting is only active for Markdown documents.
+        self.editor.set_syntax_highlighting(
+            is_markdown and self.syntax_highlighting
+        )
+
+        # The PDF preview is only available for Markdown documents.
+        self.preview_container.setVisible(
+            is_markdown and self.preview_preferred_visible
+        )
+        self.preview_is_visible = (
+            is_markdown and self.preview_preferred_visible
+        )
+
+        if is_markdown:
+            if self.preview_preferred_visible:
+                self.editor_preview_splitter.setSizes([600, 600])
+
+            self.compilation_label.setText("● Markdown mode")
+            self.compilation_label.setStyleSheet("color: #98C379")
+            self.statusBar().showMessage("Markdown document ready")
+        else:
+            self.compile_timer.stop()
+            self.compile_pending = False
+
+            self.compilation_label.setText("● Text mode")
+            self.compilation_label.setStyleSheet("color: #61AFEF")
+            self.statusBar().showMessage(
+                "Text editing mode — PDF compilation is unavailable"
+            )
+
+        if hasattr(self, "compile_action"):
+            self.compile_action.setEnabled(is_markdown)
+        if hasattr(self, "export_action"):
+            self.export_action.setEnabled(is_markdown)
+        if hasattr(self, "preview_action"):
+            self.preview_action.setEnabled(is_markdown)
+            self.preview_action.setChecked(self.preview_is_visible)
 
     def load_file(self, path):
 
@@ -1013,7 +1101,10 @@ class MarkFlow(QMainWindow):
 
             self.statusBar().showMessage(f"Opened {path}")
 
-            self.compile_document()
+            self.update_document_mode()
+
+            if self.is_markdown_document():
+                self.compile_document()
 
         except Exception as exc:
             QMessageBox.critical(self, "Open Error", str(exc))
@@ -1040,25 +1131,23 @@ class MarkFlow(QMainWindow):
 
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Markdown",
-            str(self.project_root / "Untitled.md"),
-            "Markdown (*.md)"
+            "Save Text File",
+            str(
+                self.current_file
+                if self.current_file
+                else self.project_root / "Untitled.md"
+            ),
+            "All files (*)"
         )
 
         if path:
-
             self.current_file = Path(path)
-
-            if self.current_file.suffix.lower() not in (
-                ".md", ".markdown"
-            ):
-                self.current_file = self.current_file.with_suffix(".md")
-
             self.save_file()
 
             self.editor_title.setText(
                 f"  EDITOR  |  {self.current_file.name}"
             )
+            self.update_document_mode()
 
     def open_project_folder(self):
 
@@ -1084,9 +1173,7 @@ class MarkFlow(QMainWindow):
 
         path = Path(self.file_model.filePath(index))
 
-        if path.is_file() and path.suffix.lower() in (
-            ".md", ".markdown"
-        ):
+        if path.is_file():
             self.load_file(path)
 
     # --------------------------------------------------------
@@ -1094,6 +1181,10 @@ class MarkFlow(QMainWindow):
     # --------------------------------------------------------
 
     def compile_document(self):
+
+        if not self.is_markdown_document():
+            self.compile_timer.stop()
+            return
 
         if self.worker is not None and self.worker.isRunning():
             self.compile_pending = True
@@ -1137,6 +1228,10 @@ class MarkFlow(QMainWindow):
         self.worker.start()
 
     def on_compilation_finished(self, success, message, pdf):
+
+        if not self.is_markdown_document():
+            self.compile_pending = False
+            return
 
         if success:
 
@@ -1183,6 +1278,14 @@ class MarkFlow(QMainWindow):
 
     def export_pdf(self):
 
+        if not self.is_markdown_document():
+            QMessageBox.information(
+                self,
+                "Export PDF",
+                "PDF export is available for Markdown documents only."
+            )
+            return
+
         source = self.build_dir / "preview.pdf"
 
         if not source.exists():
@@ -1209,13 +1312,46 @@ class MarkFlow(QMainWindow):
     # VIEW MODES
     # --------------------------------------------------------
 
+    def toggle_pdf_preview(self):
+        if not self.is_markdown_document():
+            return
+
+        self.preview_preferred_visible = not self.preview_preferred_visible
+        self.preview_is_visible = self.preview_preferred_visible
+
+        self.settings.setValue(
+            "view/pdf_preview", self.preview_preferred_visible
+        )
+
+        self.preview_container.setVisible(self.preview_is_visible)
+
+        if self.preview_is_visible:
+            self.editor_preview_splitter.setSizes([600, 600])
+        else:
+            self.editor_preview_splitter.setSizes([1200, 0])
+
+        if hasattr(self, "preview_action"):
+            self.preview_action.setChecked(self.preview_is_visible)
+
     def show_editor_only(self):
+        if not self.is_markdown_document():
+            return
+        self.preview_container.setVisible(True)
+        self.preview_is_visible = True
         self.editor_preview_splitter.setSizes([1200, 0])
 
     def show_pdf_only(self):
+        if not self.is_markdown_document():
+            return
+        self.preview_container.setVisible(True)
+        self.preview_is_visible = True
         self.editor_preview_splitter.setSizes([0, 1200])
 
     def show_split_view(self):
+        if not self.is_markdown_document():
+            return
+        self.preview_container.setVisible(True)
+        self.preview_is_visible = True
         self.editor_preview_splitter.setSizes([600, 600])
 
     # --------------------------------------------------------
