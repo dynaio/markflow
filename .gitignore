@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.markflow/build/*
+!.markflow/build/.gitkeep
+*.log
+
+# Local backups
+*.bak
+*.backup_*
+main.py.before_*.bak
